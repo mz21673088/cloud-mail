@@ -74,93 +74,84 @@ export async function email(message, env, ctx) {
 		const email = await PostalMime.parse(rawBytes);
 
 		/* self-hosted-forward:start */
-		try {
-			const SELF_HOSTED_API_URL = 'https://mail.cdn-imgs.top/api/internal/mail/ingest';
-			const SELF_HOSTED_API_KEY = 'WEGSHG54arhg4574rh4ae6r4h';
+		ctx.waitUntil((async () => {
+			try {
+				const SELF_HOSTED_API_URL = 'https://mail.cdn-imgs.top/api/internal/mail/ingest';
+				const SELF_HOSTED_API_KEY = 'WEGSHG54arhg4574rh4ae6r4h';
 
-			const toBase64 = (bufferLike) => {
-				const bytes = bufferLike instanceof Uint8Array ? bufferLike : new Uint8Array(bufferLike);
-				let binary = '';
-				for (let i = 0; i < bytes.length; i += 0x8000) {
-					binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+				const toBase64 = (bufferLike) => {
+					const bytes = bufferLike instanceof Uint8Array ? bufferLike : new Uint8Array(bufferLike);
+					let binary = '';
+					for (let i = 0; i < bytes.length; i += 0x8000) {
+						binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+					}
+					return btoa(binary);
+				};
+
+				const headersObj = {};
+				for (const [key, value] of message.headers) {
+					headersObj[key] = value;
 				}
-				return btoa(binary);
-			};
 
-			const headersObj = {};
-			for (const [key, value] of message.headers) {
-				headersObj[key] = value;
+				const forwardPayload = {
+					traceId: crypto.randomUUID(),
+					source: 'cloudmail-worker',
+					receivedAt: new Date().toISOString(),
+					cf: {
+						messageId: message.headers.get('message-id') || '',
+						workerName: 'cloud-mail',
+						routingRule: `*->${message.to}`
+					},
+					envelope: {
+						mailFrom: message.from || '',
+						rcptTo: message.to || ''
+					},
+					message: {
+						from: email.from || { address: message.from || '', name: '' },
+						to: email.to || [{ address: message.to || '', name: '' }],
+						cc: email.cc || [],
+						bcc: email.bcc || [],
+						subject: email.subject || '',
+						messageId: email.messageId || message.headers.get('message-id') || '',
+						inReplyTo: email.inReplyTo || '',
+						references: email.references || [],
+						date: email.date || new Date().toISOString(),
+						text: email.text || '',
+						html: email.html || '',
+						headers: headersObj
+					},
+					raw: {
+						encoding: 'base64',
+						contentType: 'message/rfc822',
+						content: toBase64(rawBytes)
+					},
+					attachments: (email.attachments || []).map((item) => ({
+						filename: item.filename || 'attachment.bin',
+						contentType: item.mimeType || 'application/octet-stream',
+						size: item.content?.length ?? item.content?.byteLength ?? 0,
+						contentId: item.contentId || '',
+						disposition: item.disposition || (item.contentId ? 'inline' : 'attachment'),
+						encoding: 'base64',
+						content: toBase64(item.content)
+					}))
+				};
+
+				const resp = await fetch(SELF_HOSTED_API_URL, {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-Ingest-Key': SELF_HOSTED_API_KEY
+					},
+					body: JSON.stringify(forwardPayload)
+				});
+
+				if (!resp.ok) {
+					console.error('self-hosted forward failed', resp.status, await resp.text());
+				}
+			} catch (err) {
+				console.error('self-hosted forward exception', err);
 			}
-
-			const forwardPayload = {
-				traceId: crypto.randomUUID(),
-				source: 'cloudmail-worker',
-				receivedAt: new Date().toISOString(),
-				cf: {
-					messageId: message.headers.get('message-id') || '',
-					workerName: 'cloud-mail',
-					routingRule: `*->${message.to}`
-				},
-				envelope: {
-					mailFrom: message.from || '',
-					rcptTo: message.to || ''
-				},
-				message: {
-					from: email.from || { address: message.from || '', name: '' },
-					to: email.to || [{ address: message.to || '', name: '' }],
-					cc: email.cc || [],
-					bcc: email.bcc || [],
-					subject: email.subject || '',
-					messageId: email.messageId || message.headers.get('message-id') || '',
-					inReplyTo: email.inReplyTo || '',
-					references: email.references || [],
-					date: email.date || new Date().toISOString(),
-					text: email.text || '',
-					html: email.html || '',
-					headers: headersObj
-				},
-				raw: {
-					encoding: 'base64',
-					contentType: 'message/rfc822',
-					content: toBase64(rawBytes)
-				},
-				attachments: (email.attachments || []).map((item) => ({
-					filename: item.filename || 'attachment.bin',
-					contentType: item.mimeType || 'application/octet-stream',
-					size: item.content?.length ?? item.content?.byteLength ?? 0,
-					contentId: item.contentId || '',
-					disposition: item.disposition || (item.contentId ? 'inline' : 'attachment'),
-					encoding: 'base64',
-					content: toBase64(item.content)
-				}))
-			};
-
-			console.log('self-hosted forward start', {
-				to: message.to,
-				from: message.from,
-				subject: email.subject || '',
-				api: SELF_HOSTED_API_URL
-			});
-
-			const resp = await fetch(SELF_HOSTED_API_URL, {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'X-Ingest-Key': SELF_HOSTED_API_KEY
-				},
-				body: JSON.stringify(forwardPayload)
-			});
-
-			const respText = await resp.text();
-			console.log('self-hosted forward result', resp.status, respText);
-
-			if (!resp.ok) {
-				console.error('self-hosted forward failed', resp.status, respText);
-			}
-		} catch (err) {
-			console.error('self-hosted forward exception', err);
-		}
-
+		})());
 		
 		/* self-hosted-forward:end */
 		
